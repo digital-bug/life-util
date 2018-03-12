@@ -8,7 +8,7 @@ import java.util.List;
 
 public class FileCompare {
 	public static void main(String[] args) throws IOException {
-		File dir = new File("C:\\Users\\home\\Desktop\\새 폴더\\혜진 핸드폰");
+		File dir = new File("D:\\10_외부 프로젝트\\");
 
 		List<File> targets = new LinkedList<>();
 		searchFiles(dir, targets);
