@@ -1,15 +1,21 @@
+import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Function;
-import java.util.function.Predicate;
 
 import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.Pair;
+
+import digitalbug.com.github.parser.CharType;
+import digitalbug.com.github.parser.WordReadStream;
 
 public class Parser {
 	// interface SentenceStateEventListener {
@@ -107,16 +113,31 @@ public class Parser {
 	// }
 
 	private static enum PhraseType {
-		INLINE_COMMENT(PhraseType::handlerInlineComment), //
+		INLINE_COMMENT(PhraseType::handlerInlineComment, true), //
+		MULTILINE_COMMENT0(PhraseType::handlerMultiLineComment, true), //
+		MULTILINE_COMMENT1(PhraseType::handlerMultiLineCommentEnd, true), //
+		MULTILINE_COMMENT2(PhraseType::handlerMultiLineCommentEnded, true), //
 
-		OP_DIV(PhraseType::handlerOpDiv), //
+		IDENTIFIER(PhraseType::handlerIdentifier, false), //
 
-		OTHER(PhraseType::handlerOther); //
+		OP_ASSIGN(PhraseType::handlerOpAssign, false), //
+		OP_DIV(PhraseType::handlerOpDiv, false), //
+
+		OP_EQ(PhraseType::handlerOpEq, true), //
+		OP_EQ_TYPE(PhraseType::handlerOpEqType, true), //
+
+		OTHER(PhraseType::handlerOther, false); //
 
 		private Function<CharType, PhraseType> followHandler;
+		private boolean isPreConnect;
 
-		private PhraseType(Function<CharType, PhraseType> followHandler) {
+		private PhraseType(Function<CharType, PhraseType> followHandler, boolean isPreConnect) {
 			this.followHandler = followHandler;
+			this.isPreConnect = isPreConnect;
+		}
+
+		public boolean isPreConnect() {
+			return isPreConnect;
 		}
 
 		public PhraseType onFollow(CharType ct) {
@@ -132,10 +153,39 @@ public class Parser {
 			}
 		}
 
+		private static PhraseType handlerMultiLineComment(CharType ct) {
+			switch (ct) {
+			case OP_MULTI:
+				return MULTILINE_COMMENT1;
+			default:
+				return MULTILINE_COMMENT0;
+			}
+		}
+
+		private static PhraseType handlerMultiLineCommentEnd(CharType ct) {
+			switch (ct) {
+			case OP_DIV:
+				return MULTILINE_COMMENT2;
+			default:
+				return MULTILINE_COMMENT0;
+			}
+		}
+
+		private static PhraseType handlerMultiLineCommentEnded(CharType ct) {
+			switch (ct) {
+			default:
+				return OTHER;
+			}
+		}
+
 		private static PhraseType handlerOpDiv(CharType ct) {
 			switch (ct) {
 			case OP_DIV:
 				return INLINE_COMMENT;
+			case OP_MULTI:
+				return MULTILINE_COMMENT0;
+			case OP_EQ:
+				return OTHER;
 			default:
 				return OTHER;
 			}
@@ -144,76 +194,68 @@ public class Parser {
 		private static PhraseType handlerOther(CharType ct) {
 			switch (ct) {
 			case OP_DIV:
-				return OTHER;
+				return OP_DIV;
+			case UNDER_SCORE:
+				return IDENTIFIER;
+			case DOLLAR:
+				return IDENTIFIER;
+			case ALPHABET:
+				return IDENTIFIER;
+			case OP_EQ:
+				return OP_ASSIGN;
 			default:
-				return INLINE_COMMENT;
+				return OTHER;
+			}
+		}
+
+		private static PhraseType handlerIdentifier(CharType ct) {
+			switch (ct) {
+			case UNDER_SCORE:
+				return IDENTIFIER;
+			case DOLLAR:
+				return IDENTIFIER;
+			case NUMERICS:
+				return IDENTIFIER;
+			case ALPHABET:
+				return IDENTIFIER;
+			case OP_EQ:
+				return OP_ASSIGN;
+			default:
+				return OTHER;
+			}
+		}
+
+		private static PhraseType handlerOpAssign(CharType ct) {
+			switch (ct) {
+			case OP_EQ:
+				return OP_EQ;
+			default:
+				return OTHER;
+			}
+		}
+
+		private static PhraseType handlerOpEq(CharType ct) {
+			switch (ct) {
+			case OP_EQ:
+				return OP_EQ_TYPE;
+			default:
+				return OTHER;
+			}
+		}
+
+		private static PhraseType handlerOpEqType(CharType ct) {
+			switch (ct) {
+			default:
+				return OTHER;
 			}
 		}
 	}
 
-	private static enum CharType {
-		DUALBYTES(c -> (c & 0x80) > 0, true), // 2바이트 문자
-		LOWERCASES(Character::isLowerCase, true), // 소문자
-		UPPERCASES(Character::isUpperCase, true), // 대문자
-		NUMERICS(Character::isDigit, true), // 숫자
-		UNDER_SCORE(c -> c == '_', true), //
-		AT(c -> c == '@', false),
-
-		RETURNS(c -> c == '\r' || c == '\n', true), // return
-		COMMA(c -> c == ',', false), //
-		WHATESPACES(Character::isWhitespace, true), // 공백
-
-		SEMICOLON(c -> c == ';', false), //
-		COLON(c -> c == ':', false), //
-
-		OP_DIV(c -> c == '/', false), //
-		OP_MULTI(c -> c == '*', false), //
-		OP_PLUS(c -> c == '+', false), //
-		OP_MINUS(c -> c == '-', false), //
-		OP_EQ(c -> c == '=', false), //
-		OP_OR(c -> c == '|', false), //
-		OP_AND(c -> c == '&', false), //
-		OP_NOT(c -> c == '!', false), //
-		OP_DOT(c -> c == '.', false), //
-
-		OPEN_PARENTHESES(c -> c == '(', false), //
-		CLOSE_PARENTHESES(c -> c == ')', false), //
-		OPEN_CURLY_BRACE(c -> c == '{', false), //
-		CLOSE_CURLY_BRACE(c -> c == '}', false), //
-		OPEN_SQUARE_BRACKET(c -> c == '[', false), //
-		CLOSE_SQUARE_BRACKET(c -> c == ']', false), //
-
-		DBL_QUOTE(c -> c == '"', false), //
-		SGL_QUOTE(c -> c == '\'', false), //
-
-		LETTER(Character::isLetter, false), //
-		OTHER(c -> false, false);
-
-		/**
-		 * 문자 판별 함수
-		 */
-		private Predicate<Character> predict;
-		/**
-		 * 동일 종류 문자 그룹핑 여부
-		 */
-		private boolean grouping;
-
-		private CharType(Predicate<Character> p, boolean grouping) {
-			this.predict = p;
-			this.grouping = grouping;
-		}
-
-		public static CharType findCharType(char c) {
-			return Arrays.stream(CharType.values()).filter(x -> x.predict.test(c)).findAny().orElse(CharType.OTHER);
-		}
-
-		public boolean isGrouping() {
-			return grouping;
-		}
-
-	}
-
 	private static class StreamWordGetter {
+
+		private List<Pair<CharType, byte[]>> wordPair = new LinkedList<>();
+		private Thread t;
+
 		private class StreamTracker implements Runnable {
 			private InputStream is;
 
@@ -235,7 +277,18 @@ public class Parser {
 
 							if (lastWord.size() > 0) {
 								if (lastType != thisType || !thisType.isGrouping()) {
-									// printWord(lastWord, lastType);
+									synchronized (StreamWordGetter.this) {
+										if (wordPair.size() > 20) {
+											try {
+												this.wait();
+											} catch (InterruptedException e) {
+											}
+										}
+									}
+									wordPair.add(new ImmutablePair<CharType, byte[]>(lastType,
+											ArrayUtils.toPrimitive(lastWord.toArray(new Byte[lastWord.size()]))));
+									wordPair.notify();
+
 									lastType = thisType;
 									lastWord = new LinkedList<>();
 								}
@@ -245,53 +298,49 @@ public class Parser {
 							lastWord.add(buffer[i]);
 						}
 						if (lastWord.size() > 0) {
-							printWord(lastWord, lastType);
+							synchronized (StreamWordGetter.this) {
+								if (wordPair.size() > 20) {
+									try {
+										this.wait();
+									} catch (InterruptedException e) {
+									}
+								}
+							}
+							wordPair.add(new ImmutablePair<CharType, byte[]>(lastType,
+									ArrayUtils.toPrimitive(lastWord.toArray(new Byte[lastWord.size()]))));
+							wordPair.notify();
 						}
-						break;
 					}
 				} catch (Exception e) {
 					throw new RuntimeException(e);
+				} finally {
+					wordPair.notify();
 				}
 			}
 		}
 
 		public StreamWordGetter(InputStream is) {
 			StreamTracker streamTracker = new StreamTracker(is);
-			Thread t = new Thread(streamTracker);
+			t = new Thread(streamTracker);
 			t.start();
 		}
 
-		public Pair<CharType, char[]> getNextWord() {
-			
-			/********/
-			// toDo: next job from here. i have to concern thread and blocking.
-			/********/
-			
-			return null;
-		}
-	}
-
-	public static void main(String[] args) {
-		if (args.length < 1) {
-			throw new RuntimeException("Usage - args: a file name for parsing");
-		}
-
-		for (int j = 0; j < args.length; j++) {
-			try (InputStream is = new FileInputStream(args[j]);) {
-				StreamWordGetter streamWordGetter = new StreamWordGetter(is);
-				Pair<CharType, char[]> word = null;
-				PhraseType lastPType = PhraseType.OTHER;
-				while ((word = streamWordGetter.getNextWord()) != null) {
-					lastPType = lastPType.onFollow(word.getLeft());
-					word.getRight();
+		public Pair<CharType, byte[]> getNextWord() {
+			synchronized (this) {
+				if (t.isAlive()) {
+					if (wordPair.size() == 0) {
+						try {
+							wordPair.wait();
+						} catch (InterruptedException e) {
+						}
+					}
 				}
-			} catch (FileNotFoundException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			} catch (IOException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
 			}
+			Pair<CharType, byte[]> word = wordPair.get(0);
+			wordPair.remove(0);
+			t.notify();
+
+			return word;
 		}
 	}
 
@@ -302,32 +351,76 @@ public class Parser {
 
 		for (int j = 0; j < args.length; j++) {
 			try (InputStream is = new FileInputStream(args[j]);) {
-				byte[] buffer = new byte[2048];
-				int readLen = 0;
-				CharType lastType = null;
-				List<Byte> lastWord = new LinkedList<>();
+				StreamWordGetter streamWordGetter = new StreamWordGetter(is);
+				Pair<CharType, byte[]> word = null;
 				PhraseType lastPType = PhraseType.OTHER;
-				while ((readLen = is.read(buffer)) > 0) {
-					for (int i = 0; i < readLen; i++) {
-						char c = (char) buffer[i];
-						CharType thisType = CharType.findCharType(c);
+				while ((word = streamWordGetter.getNextWord()) != null) {
+					lastPType = lastPType.onFollow(word.getLeft());
+					word.getRight();
+				}
+			} catch (FileNotFoundException e) {
+				e.printStackTrace();
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+		}
+	}
 
-						if (lastWord.size() > 0) {
-							if (lastType != thisType || !thisType.isGrouping()) {
-								// printWord(lastWord, lastType);
-								lastPType = lastPType.onFollow(lastType);
+	public static void main(String[] args) {
+		if (args.length < 1) {
+			throw new RuntimeException("Usage - args: a file name for parsing");
+		}
+
+		List<String> ReservedWords = Arrays.asList(new String[] { "abstract", "alert", "all", "anchor", "anchors",
+				"area", "arguments", "Array", "assign", "await", "blur", "boolean", "break", "button", "byte", "case",
+				"catch", "char", "checkbox", "class", "clearInterval", "clearTimeout", "clientInformation", "close",
+				"closed", "confirm", "const", "constructor", "continue", "crypto", "Date", "debugger", "decodeURI",
+				"decodeURIComponent", "default", "defaultStatus", "delete", "do", "document", "double", "element",
+				"elements", "else", "embed", "embeds", "encodeURI", "encodeURIComponent", "enum", "escape", "eval",
+				"event", "export", "extends", "fileUpload", "final", "finally", "float", "focus", "for", "form",
+				"forms", "frame", "frameRate", "frames", "function", "goto", "hasOwnProperty", "hidden", "history",
+				"if", "image", "images", "implements", "import", "in", "Infinity", "innerHeight", "innerWidth",
+				"instanceof", "int", "interface", "isFinite", "isNaN", "isPrototypeOf", "layer", "layers", "length",
+				"let", "link", "location", "long", "Math", "mimeTypes", "name", "NaN", "native", "navigate",
+				"navigator", "new", "null", "Number", "Object", "offscreenBuffering", "onblur", "onclick", "onerror",
+				"onfocus", "onkeydown", "onkeypress", "onkeyup", "onload", "onmousedown", "onmouseover", "onmouseup",
+				"onsubmit", "open", "opener", "option", "outerHeight", "outerWidth", "package", "packages",
+				"pageXOffset", "pageYOffset", "parent", "parseFloat", "parseInt", "password", "pkcs11", "plugin",
+				"private", "prompt", "propertyIsEnum", "protected", "prototype", "public", "radio", "reset", "return",
+				"screenX", "screenY", "scroll", "secure", "select", "self", "setInterval", "setTimeout", "short",
+				"static", "status", "String", "submit", "super", "switch", "synchronized", "taint", "text", "textarea",
+				"this", "throw", "throws", "top", "toString", "transient", "try", "typeof", "undefined", "unescape",
+				"untaint", "valueOf", "var", "void", "volatile", "while", "window", "with", "yield", "false", "true" });
+
+		for (int j = 0; j < args.length; j++) {
+			try (WordReadStream wrs = new WordReadStream(args[j]);) {
+				Pair<CharType, byte[]> readWord = null;
+				PhraseType lastType = PhraseType.OTHER;
+				ByteArrayOutputStream baos = new ByteArrayOutputStream();
+				while ((readWord = wrs.readWord()) != null) {
+					PhraseType thisType = lastType.onFollow(readWord.getLeft());
+					if (baos.size() > 0) {
+						if (lastType != thisType) {
+							if (thisType.isPreConnect()) {
 								lastType = thisType;
-								lastWord = new LinkedList<>();
+							} else {
+								byte[] bytes = baos.toByteArray();
+								if (lastType == PhraseType.IDENTIFIER && ReservedWords.contains(new String(bytes)))
+									System.out.println("<Reserved Words>" + new String(bytes));
+								else
+									System.out.println("<" + lastType + ">" + new String(bytes));
+								lastType = thisType;
+								baos = new ByteArrayOutputStream();
 							}
-						} else {
-							lastType = thisType;
 						}
-						lastWord.add(buffer[i]);
+					} else {
+						lastType = thisType;
 					}
-					if (lastWord.size() > 0) {
-						printWord(lastWord, lastType);
-					}
-					break;
+					baos.write(readWord.getRight());
+				}
+				if (baos.size() > 0) {
+					byte[] bytes = baos.toByteArray();
+					System.out.println("<" + lastType + ">" + new String(bytes));
 				}
 			} catch (FileNotFoundException e) {
 				e.printStackTrace();
@@ -340,15 +433,15 @@ public class Parser {
 	/**
 	 * 기본 문자형 데이터를 포멧에 맞춰 출력
 	 * 
-	 * @param lastWord
+	 * @param bs
 	 *            마지막 단어
 	 * @param lastType
 	 *            마지막 데이터 타입
 	 */
-	private static void printWord(List<Byte> lastWord, CharType lastType) {
-		byte[] tempLastWord = ArrayUtils.toPrimitive(lastWord.toArray(new Byte[lastWord.size()]));
-		System.out.println(
-				"<" + lastType.toString() + ">\t" + new String(tempLastWord) + "\t" + bytesToHex(tempLastWord));
+	private static void printWord(byte[] lastWord, CharType lastType) {
+		if (lastType != CharType.OTHER || lastType != CharType.LETTER)
+			return;
+		System.out.println("<" + lastType + ">\t" + new String(lastWord) + "\t" + bytesToHex(lastWord));
 	}
 
 	/**
